@@ -1,0 +1,110 @@
+name: run
+run-name: "${{ inputs.repo }} · ${{ inputs.branch }}"
+
+# Dispatched by the macaron controller only (macaron-bot has write here; nobody else does).
+# The job holds NO secret: its only permission is to request an OIDC token, which the controller
+# exchanges, once, for this run's capped OpenRouter key and context.
+on:
+  workflow_dispatch:
+    inputs:
+      ticket: { description: "One-time ticket", required: true, type: string }
+      repo: { description: "Upstream owner/name", required: true, type: string }
+      base-sha: { description: "Commit to work on", required: true, type: string }
+      fork: { description: "The bot's fork owner/name", required: true, type: string }
+      branch: { description: "Branch on the fork", required: true, type: string }
+      env-json: { description: "Environment (source, name or path, params)", required: true, type: string }
+      runs-on: { description: "Runner label", required: true, type: string }
+      timeout-minutes: { description: "Job timeout", required: true, type: string }
+      full-environment: { description: "Set the project up (false for triage)", required: true, type: string }
+      harness: { description: "claude, codex or opencode", required: true, type: string }
+      controller-url: { description: "Where the OIDC token is exchanged", required: true, type: string }
+
+permissions: {}
+
+concurrency:
+  group: run-${{ inputs.repo }}-${{ inputs.branch }}
+  cancel-in-progress: false
+
+jobs:
+  agent:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout-minutes) }}
+    permissions:
+      id-token: write
+      contents: read # checkout of this (public) repository's environments
+    env:
+      # Pinned bundle of open-macaron/macaron's agent-cli; the PR bumping it verified its attestation.
+      AGENT_CLI_URL: https://github.com/open-macaron/macaron/releases/download/agent-cli-bf6d5b196a7d3a45ca20921717533e741b58fbce/macaron-agent.mjs
+      AGENT_CLI_SHA256: "134a936b3749627e07e01dc29380be5ca06ab4630520f9b458d43e23d36e0be6"
+      MACARON_CONTROLLER_URL: ${{ inputs.controller-url }}
+      MACARON_TICKET: ${{ inputs.ticket }}
+      MACARON_REPO: ${{ inputs.repo }}
+      MACARON_FORK: ${{ inputs.fork }}
+      MACARON_BRANCH: ${{ inputs.branch }}
+      MACARON_BASE_SHA: ${{ inputs.base-sha }}
+      MACARON_HARNESS: ${{ inputs.harness }}
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: install macaron-agent
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/macaron-bin"
+          curl -fsSL --retry 3 "$AGENT_CLI_URL" -o "$RUNNER_TEMP/macaron-bin/macaron-agent.mjs"
+          echo "$AGENT_CLI_SHA256  $RUNNER_TEMP/macaron-bin/macaron-agent.mjs" | sha256sum --check --strict -
+          # Always the Node.js 24 installed above, whatever version the repository's environment selects.
+          printf '#!/bin/sh\nexec %s %s "$@"\n' "$(command -v node)" "$RUNNER_TEMP/macaron-bin/macaron-agent.mjs" > "$RUNNER_TEMP/macaron-bin/macaron-agent"
+          chmod +x "$RUNNER_TEMP/macaron-bin/macaron-agent"
+          echo "$RUNNER_TEMP/macaron-bin" >> "$GITHUB_PATH"
+
+      - name: prepare (clone and harness, in parallel)
+        run: macaron-agent prepare
+
+      # The environment is a composite action loaded at runtime from one of three sources
+      # (docs/SCALING.md §1). It runs before bootstrap: it never sees the key.
+      - name: checkout environments
+        if: inputs.full-environment == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .macaron/runner
+          persist-credentials: false
+      - name: resolve environment
+        if: inputs.full-environment == 'true'
+        id: env
+        env:
+          ENV_JSON: ${{ inputs.env-json }}
+        run: |
+          set -euo pipefail
+          source="$(jq -r .source <<<"$ENV_JSON")"
+          case "$source" in
+            shared) from=".macaron/runner/environments/$(jq -r .name <<<"$ENV_JSON")" ;;
+            own) from=".macaron/runner/environments/repos/$MACARON_REPO" ;;
+            upstream) from="upstream/$(jq -r .path <<<"$ENV_JSON")" ;;
+            *) echo "unknown environment source: $source" >&2; exit 1 ;;
+          esac
+          [[ -f "$from/action.yml" ]] || { echo "no environment at $from" >&2; exit 1; }
+          rm -rf .macaron/env && cp -R "$from" .macaron/env
+          echo "params=$(jq -c .params <<<"$ENV_JSON")" >> "$GITHUB_OUTPUT"
+      - name: environment
+        if: inputs.full-environment == 'true'
+        # Copied in at runtime from shared/own/upstream (SCALING.md §1): not a file of this repository.
+        uses: ./.macaron/env # zizmor: ignore[self-repository]
+        with:
+          work: ${{ github.workspace }}/upstream
+          params: ${{ steps.env.outputs.params }}
+
+      - name: bootstrap (OIDC → key and context)
+        run: macaron-agent bootstrap
+
+      - name: agent
+        run: macaron-agent run
+
+      - name: upload result
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macaron-result
+          path: ${{ runner.temp }}/macaron-out
+          retention-days: 3
+          if-no-files-found: error

@@ -1,0 +1,41 @@
+name: generic environment
+description: >
+  Most repositories: the Node.js version the repository asks for (.nvmrc / .node-version, or the
+  current LTS), then its dependencies from its own lockfile. Runs before the agent gets any key.
+inputs:
+  work:
+    description: Path of the upstream checkout.
+    required: true
+  params:
+    description: JSON object of environment parameters from the controller (unused here).
+    required: false
+    default: "{}"
+runs:
+  using: composite
+  steps:
+    - name: Node.js version file
+      id: node
+      shell: bash
+      env:
+        WORK: ${{ inputs.work }}
+      run: |
+        for file in .nvmrc .node-version; do
+          if [[ -f "$WORK/$file" ]]; then echo "file=$WORK/$file" >> "$GITHUB_OUTPUT"; exit 0; fi
+        done
+        echo "file=" >> "$GITHUB_OUTPUT"
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version-file: ${{ steps.node.outputs.file }}
+        node-version: ${{ steps.node.outputs.file == '' && 'lts/*' || '' }}
+    - name: dependencies
+      shell: bash
+      env:
+        WORK: ${{ inputs.work }}
+      working-directory: ${{ inputs.work }}
+      run: |
+        if [[ -f pnpm-lock.yaml ]]; then corepack enable && pnpm install --frozen-lockfile
+        elif [[ -f yarn.lock ]]; then corepack enable && yarn install --immutable
+        elif [[ -f package-lock.json ]]; then npm ci --no-fund --no-audit
+        elif [[ -f package.json ]]; then npm install --no-fund --no-audit
+        else echo "no JavaScript dependencies to install"
+        fi
