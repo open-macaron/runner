@@ -1,0 +1,10 @@
+{
+  "name": "macaron-podman-desktop-tools",
+  "private": true,
+  "description": "What the agent uses to drive Podman Desktop: the MCP server of Podman Desktop's mcp-testing skill, and Playwright for screenshots. Pinned by package-lock.json.",
+  "type": "module",
+  "dependencies": {
+    "electron-test-mcp": "0.1.0",
+    "playwright": "1.64.0"
+  }
+}

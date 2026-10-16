@@ -1,0 +1,114 @@
+name: podman-desktop-extensions environment
+description: >
+  Podman Desktop extensions: the repository's dependencies, the Podman Desktop release its API
+  targets, the extension built from its Containerfile and preinstalled, then Podman Desktop running
+  on a virtual display with the Chrome DevTools Protocol on port 9222. The agent drives it through
+  the MCP server of Podman Desktop's mcp-testing skill. Needs ubuntu-26.04 (Podman 5.7, Xvfb).
+  Runs before the agent gets any key.
+inputs:
+  work:
+    description: Path of the upstream checkout.
+    required: true
+  params:
+    description: >
+      JSON object. Optional "podmanDesktopVersion" (default: the @podman-desktop/api version the
+      repository's lockfile resolves).
+    required: false
+    default: "{}"
+runs:
+  using: composite
+  steps:
+    - name: paths
+      shell: bash
+      env:
+        WORK: ${{ inputs.work }}
+      run: |
+        set -euo pipefail
+        env_dir="$RUNNER_TEMP/macaron-env"
+        home="$RUNNER_TEMP/podman-desktop-home"
+        mkdir -p "$env_dir" "$home/plugins" "$home/configuration"
+        {
+          echo "MACARON_ENV=$env_dir"
+          echo "MACARON_WORK=$WORK"
+          echo "PODMAN_DESKTOP_HOME_DIR=$home"
+          echo "DISPLAY=:99"
+        } >> "$GITHUB_ENV"
+
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: 24
+
+    - name: dependencies
+      shell: bash
+      working-directory: ${{ inputs.work }}
+      run: corepack enable && pnpm install --frozen-lockfile
+
+    - name: Podman Desktop version
+      id: version
+      shell: bash
+      working-directory: ${{ inputs.work }}
+      env:
+        PARAMS: ${{ inputs.params }}
+      run: |
+        set -euo pipefail
+        version="$(jq -r '.podmanDesktopVersion // empty' <<<"$PARAMS")"
+        if [[ -z "$version" ]]; then
+          # The @podman-desktop/api the lockfile resolves: the Podman Desktop release the extension targets.
+          version="$(grep -oE "^  '?@podman-desktop/api@[0-9][^':]*" pnpm-lock.yaml | sed -E "s/^  '?@podman-desktop\/api@//" | sort -V | tail -n 1)"
+        fi
+        [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "::error::could not determine the Podman Desktop version (got '$version')"; exit 1; }
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - name: Podman Desktop
+      id: podman-desktop
+      uses: podman-desktop/gh-extensions-actions/.github/actions/podman-desktop-install@e59cd52b942e8dfcc187293c5d8e9f3831c7ac0c # v0.11.0
+      with:
+        version: ${{ steps.version.outputs.version }}
+        github-token: ${{ github.token }}
+
+    - name: tools for the agent
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        # podman-desktop/podman-desktop at the commit whose mcp-testing skill this environment follows.
+        SKILL_REPO: https://github.com/podman-desktop/podman-desktop.git
+        SKILL_SHA: 1395eb8743821e566b5d5f741f523c67f7e407bc
+      run: |
+        set -euo pipefail
+        # The MCP server and Playwright, from the lockfile next to this action.
+        mkdir -p "$MACARON_ENV/tools"
+        cp "$ACTION_PATH/tools/package.json" "$ACTION_PATH/tools/package-lock.json" "$ACTION_PATH/tools/screenshot.mjs" "$MACARON_ENV/tools/"
+        npm ci --prefix "$MACARON_ENV/tools" --no-fund --no-audit --omit=dev
+        # Podman Desktop's mcp-testing skill: the agent prompt and the selectors of each screen.
+        skill_checkout="$RUNNER_TEMP/podman-desktop-skill"
+        git init --quiet "$skill_checkout"
+        git -C "$skill_checkout" remote add origin "$SKILL_REPO"
+        git -C "$skill_checkout" sparse-checkout set --no-cone /.agents/skills/mcp-testing/
+        git -C "$skill_checkout" fetch --quiet --depth=1 --filter=blob:none origin "$SKILL_SHA"
+        git -C "$skill_checkout" checkout --quiet FETCH_HEAD
+        rm -rf "$MACARON_ENV/skill" && cp -R "$skill_checkout/.agents/skills/mcp-testing" "$MACARON_ENV/skill"
+        # What macaron-agent passes to the harness: the MCP server, and these instructions.
+        jq -n --arg server "$MACARON_ENV/tools/node_modules/electron-test-mcp/dist/index.js" \
+          '{ mcpServers: { "podman-desktop-mcp": { type: "stdio", command: "node", args: [$server] } } }' > "$MACARON_ENV/mcp.json"
+        cp "$ACTION_PATH/AGENTS.md" "$MACARON_ENV/AGENTS.md"
+        cp "$ACTION_PATH/podman-desktop.sh" "$MACARON_ENV/podman-desktop.sh"
+
+    - name: Podman Desktop on a virtual display (CDP on 9222)
+      shell: bash
+      env:
+        PODMAN_DESKTOP_BINARY: ${{ steps.podman-desktop.outputs.binary }}
+      run: |
+        set -euo pipefail
+        echo "PODMAN_DESKTOP_BINARY=$PODMAN_DESKTOP_BINARY" >> "$GITHUB_ENV"
+        # As the Playwright runner of @podman-desktop/tests-playwright, plus no telemetry.
+        cat > "$PODMAN_DESKTOP_HOME_DIR/configuration/settings.json" <<'JSON'
+        {
+          "preferences.OpenDevTools": "none",
+          "extensions.autoUpdate": false,
+          "extensions.autoCheckUpdates": false,
+          "telemetry.enabled": false,
+          "telemetry.check": true
+        }
+        JSON
+        Xvfb :99 -screen 0 1600x1000x24 >"$MACARON_ENV/xvfb.log" 2>&1 &
+        bash "$MACARON_ENV/podman-desktop.sh"
