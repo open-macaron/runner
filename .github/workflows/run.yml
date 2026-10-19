@@ -3,7 +3,7 @@ run-name: "${{ inputs.repo }} · ${{ inputs.branch }}"
 
 # Dispatched by the macaron controller only (macaron-bot has write here; nobody else does).
 # The job holds NO secret: its only permission is to request an OIDC token, which the controller
-# exchanges, once, for this run's capped OpenRouter key and context.
+# exchanges, once, for this run's capped LLM key and context.
 on:
   workflow_dispatch:
     inputs:
@@ -34,8 +34,8 @@ jobs:
       contents: read # checkout of this (public) repository's environments
     env:
       # Pinned bundle of open-macaron/macaron's agent-cli; the PR bumping it verified its attestation.
-      AGENT_CLI_URL: https://github.com/open-macaron/macaron/releases/download/agent-cli-1aac3b0257f2c68a0a2edabcb583e088371ad2f8/macaron-agent.mjs
-      AGENT_CLI_SHA256: "8c57b241161f4fd78ee5d3ae7fdc73f9154758e5e072f2bd241c7ddaeba89b7a"
+      AGENT_CLI_URL: https://github.com/open-macaron/macaron/releases/download/agent-cli-7ba4b583d1354f3d0ccd3044f8d971ee6775a5c4/macaron-agent.mjs
+      AGENT_CLI_SHA256: "7f31ea3638e7aa55c20904cb74aef415dd5df8d2b69e4250436779054a0808f5"
       MACARON_CONTROLLER_URL: ${{ inputs.controller-url }}
       MACARON_TICKET: ${{ inputs.ticket }}
       MACARON_REPO: ${{ inputs.repo }}
