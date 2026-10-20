@@ -6,11 +6,13 @@
 # Used by the environment before the agent starts, and by the agent after it changes the
 # extension's code: `bash "$MACARON_ENV/podman-desktop.sh"` (then reconnect the MCP server).
 set -euo pipefail
-: "${MACARON_ENV:?}" "${PODMAN_DESKTOP_HOME_DIR:?}" "${PODMAN_DESKTOP_BINARY:?}" "${MACARON_WORK:?}" "${DISPLAY:?}"
+: "${MACARON_ENV:?}" "${PODMAN_DESKTOP_HOME_DIR:?}" "${PODMAN_DESKTOP_BINARY:?}" "${MACARON_WORK:?}"
 
 # Stop a running Podman Desktop (a restart picks up the rebuilt extension).
+# On Windows, Podman Desktop is a native process Git Bash can't signal.
 if [[ -f "$MACARON_ENV/podman-desktop.pid" ]]; then
-  kill "$(cat "$MACARON_ENV/podman-desktop.pid")" 2>/dev/null || true
+  if [[ "${RUNNER_OS:-}" == Windows ]]; then taskkill //F //T //IM "$(basename "$PODMAN_DESKTOP_BINARY")" >/dev/null 2>&1 || true
+  else kill "$(cat "$MACARON_ENV/podman-desktop.pid")" 2>/dev/null || true; fi
   for _ in $(seq 1 20); do curl -sf http://127.0.0.1:9222/json/version >/dev/null 2>&1 || break; sleep 1; done
 fi
 
@@ -21,10 +23,11 @@ podman build --retry 3 --retry-delay 10s -t localhost/macaron-extension:latest .
   || { tail -40 "$MACARON_ENV/extension-build.log"; exit 1; }
 rm -rf "$PODMAN_DESKTOP_HOME_DIR/plugins" && mkdir -p "$PODMAN_DESKTOP_HOME_DIR/plugins"
 container="$(podman create localhost/macaron-extension:latest --entrypoint "")"
-podman export "$container" | tar -x -C "$PODMAN_DESKTOP_HOME_DIR/plugins/"
+# From inside plugins/: Git Bash's tar can't take a Windows path (D:\a\...) as its -C argument.
+(cd "$PODMAN_DESKTOP_HOME_DIR/plugins" && podman export "$container" | tar -x -f -)
 podman rm -f "$container" >/dev/null
 
-# Electron runs without its sandbox: the runner restricts unprivileged user namespaces.
+# Electron runs without its sandbox: the Linux runner restricts unprivileged user namespaces.
 XDG_SESSION_TYPE=x11 ELECTRON_DISABLE_SANDBOX=1 \
   nohup "$PODMAN_DESKTOP_BINARY" --no-sandbox --remote-debugging-port=9222 >>"$MACARON_ENV/podman-desktop.log" 2>&1 &
 echo $! >"$MACARON_ENV/podman-desktop.pid"

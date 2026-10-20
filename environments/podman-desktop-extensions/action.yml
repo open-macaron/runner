@@ -3,8 +3,9 @@ description: >
   Podman Desktop extensions: the repository's dependencies, the Podman Desktop release its API
   targets, the extension built from its Containerfile and preinstalled, then Podman Desktop running
   on a virtual display with the Chrome DevTools Protocol on port 9222. The agent drives it through
-  the MCP server of Podman Desktop's mcp-testing skill. Needs ubuntu-26.04 (Podman 5.7, Xvfb).
-  Runs before the agent gets any key.
+  the MCP server of Podman Desktop's mcp-testing skill. Linux: ubuntu-26.04 (Podman 5.7, Xvfb).
+  Windows: windows-2025, the runner's desktop, Podman with a running WSL machine. Runs before the
+  agent gets any key.
 inputs:
   work:
     description: Path of the upstream checkout.
@@ -31,12 +32,25 @@ runs:
           echo "MACARON_ENV=$env_dir"
           echo "MACARON_WORK=$WORK"
           echo "PODMAN_DESKTOP_HOME_DIR=$home"
-          echo "DISPLAY=:99"
         } >> "$GITHUB_ENV"
 
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: 24
+
+    # The runner has Podman on Linux. The extension is built from its Containerfile.
+    - name: Podman and its machine
+      if: runner.os == 'Windows'
+      uses: redhat-actions/podman-install@aea6ff44f2a4a82da13d22061ce73443a125925d
+      with:
+        github-token: ${{ github.token }}
+    - name: Podman on the PATH
+      if: runner.os == 'Windows'
+      shell: bash
+      # The installer's user-scope location: podman-install only adds it to its own step's PATH.
+      run: |
+        echo "$LOCALAPPDATA\Programs\Podman" >> "$GITHUB_PATH"
+        "$LOCALAPPDATA/Programs/Podman/podman" machine list
 
     - name: dependencies
       shell: bash
@@ -83,7 +97,7 @@ runs:
         skill_checkout="$RUNNER_TEMP/podman-desktop-skill"
         git init --quiet "$skill_checkout"
         git -C "$skill_checkout" remote add origin "$SKILL_REPO"
-        git -C "$skill_checkout" sparse-checkout set --no-cone /.agents/skills/mcp-testing/
+        git -C "$skill_checkout" sparse-checkout set --no-cone .agents/skills/mcp-testing/
         git -C "$skill_checkout" fetch --quiet --depth=1 --filter=blob:none origin "$SKILL_SHA"
         git -C "$skill_checkout" checkout --quiet FETCH_HEAD
         rm -rf "$MACARON_ENV/skill" && cp -R "$skill_checkout/.agents/skills/mcp-testing" "$MACARON_ENV/skill"
@@ -93,7 +107,14 @@ runs:
         cp "$ACTION_PATH/AGENTS.md" "$MACARON_ENV/AGENTS.md"
         cp "$ACTION_PATH/podman-desktop.sh" "$MACARON_ENV/podman-desktop.sh"
 
-    - name: Podman Desktop on a virtual display (CDP on 9222)
+    - name: virtual display
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        Xvfb :99 -screen 0 1600x1000x24 >"$MACARON_ENV/xvfb.log" 2>&1 &
+        echo "DISPLAY=:99" >> "$GITHUB_ENV"
+
+    - name: Podman Desktop (CDP on 9222)
       shell: bash
       env:
         PODMAN_DESKTOP_BINARY: ${{ steps.podman-desktop.outputs.binary }}
@@ -110,5 +131,4 @@ runs:
           "telemetry.check": true
         }
         JSON
-        Xvfb :99 -screen 0 1600x1000x24 >"$MACARON_ENV/xvfb.log" 2>&1 &
         bash "$MACARON_ENV/podman-desktop.sh"
