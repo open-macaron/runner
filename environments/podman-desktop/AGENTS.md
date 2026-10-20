@@ -11,7 +11,9 @@ Podman Desktop was built from this repository's checkout (`pnpm build`) and is r
 
 **Podman machines:**
 - Linux (when this run asked for one): QEMU with KVM is installed and a stopped machine named `podman-machine-default` exists (`podman machine list`). `podman machine start` takes a minute or two; `podman machine set` needs the machine stopped.
-- Windows: Podman was installed with its Windows installer (user scope, in `$LOCALAPPDATA/Programs/Podman`) and a WSL machine named `podman-machine-default` is running. Hyper-V machines can't run on this runner. Podman reads its machine provider from `containers.conf` (`[machine] provider = "wsl"` or `"hyperv"`), e.g. `$APPDATA/containers/containers.conf`.
+- Windows: Podman was installed with its Windows installer (user scope, in `$LOCALAPPDATA/Programs/Podman`) and a WSL machine named `podman-machine-default` is running. Hyper-V works too: it is installed and you are an administrator.
+  - The installer records the provider it was installed for in `$APPDATA/containers/containers.conf.d/99-podman-machine-provider.conf` (`provider="wsl"` here, `"hyperv"` after a Hyper-V install). That drop-in overrides `$APPDATA/containers/containers.conf`.
+  - One machine runs at a time: `podman machine stop` the WSL machine before starting a Hyper-V one. A Hyper-V machine takes about a minute to create and start.
 
 **Evidence: screenshots of what you show.**
 1. Save a screenshot of the window, or of one element:
