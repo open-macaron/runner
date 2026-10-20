@@ -34,8 +34,8 @@ jobs:
       contents: read # checkout of this (public) repository's environments
     env:
       # Pinned bundle of open-macaron/macaron's agent-cli; the PR bumping it verified its attestation.
-      AGENT_CLI_URL: https://github.com/open-macaron/macaron/releases/download/agent-cli-236fd3716f49edd0a12ead013dd04b701d545e43/macaron-agent.mjs
-      AGENT_CLI_SHA256: "c0a1c089e23178a0b54545a76339ebc683bd777da42e738aa751a9d36a22d609"
+      AGENT_CLI_URL: https://github.com/open-macaron/macaron/releases/download/agent-cli-c31894d7ffdb517f4b4cf32fcd56a7f25724cc8e/macaron-agent.mjs
+      AGENT_CLI_SHA256: "710cde70586cfbbe672c3a45e94e25fe00c4e99c657cdfe64357a3b26ac9ae6b"
       MACARON_CONTROLLER_URL: ${{ inputs.controller-url }}
       MACARON_TICKET: ${{ inputs.ticket }}
       MACARON_REPO: ${{ inputs.repo }}
@@ -43,7 +43,17 @@ jobs:
       MACARON_BRANCH: ${{ inputs.branch }}
       MACARON_BASE_SHA: ${{ inputs.base-sha }}
       MACARON_HARNESS: ${{ inputs.harness }}
+    # Git Bash on Windows: every step, and every environment, is written for bash.
+    defaults:
+      run:
+        shell: bash
     steps:
+      - name: git as on Linux
+        # Git for Windows checks files out with CRLF (scripts would break, and every file the agent
+        # touches would come back changed) and refuses paths longer than 260 characters.
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false && git config --global core.longpaths true
+
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -55,7 +65,8 @@ jobs:
           curl -fsSL --retry 3 "$AGENT_CLI_URL" -o "$RUNNER_TEMP/macaron-bin/macaron-agent.mjs"
           echo "$AGENT_CLI_SHA256  $RUNNER_TEMP/macaron-bin/macaron-agent.mjs" | sha256sum --check --strict -
           # Always the Node.js 24 installed above, whatever version the repository's environment selects.
-          printf '#!/bin/sh\nexec %s %s "$@"\n' "$(command -v node)" "$RUNNER_TEMP/macaron-bin/macaron-agent.mjs" > "$RUNNER_TEMP/macaron-bin/macaron-agent"
+          # Quoted: on Windows, $RUNNER_TEMP has backslashes.
+          printf '#!/bin/sh\nexec "%s" "%s" "$@"\n' "$(command -v node)" "$RUNNER_TEMP/macaron-bin/macaron-agent.mjs" > "$RUNNER_TEMP/macaron-bin/macaron-agent"
           chmod +x "$RUNNER_TEMP/macaron-bin/macaron-agent"
           echo "$RUNNER_TEMP/macaron-bin" >> "$GITHUB_PATH"
 
