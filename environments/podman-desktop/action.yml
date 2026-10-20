@@ -1,0 +1,111 @@
+name: podman-desktop environment
+description: >
+  Podman Desktop itself: the checkout's dependencies installed and the application built from it,
+  then started with Electron on a virtual display with the Chrome DevTools Protocol on port 9222.
+  The agent drives it through the MCP server of Podman Desktop's mcp-testing skill, and can rebuild
+  and restart it after changing the code. Optionally a Podman machine (QEMU/KVM), for issues about
+  machines on Linux. Needs ubuntu-26.04 (Podman 5.7, Xvfb). Runs before the agent gets any key.
+inputs:
+  work:
+    description: Path of the upstream checkout.
+    required: true
+  params:
+    description: >
+      JSON object. Optional "machine": true to install what Podman machines need on Linux (QEMU,
+      gvproxy, virtiofsd, KVM access) and create a stopped machine named "podman-machine-default".
+    required: false
+    default: "{}"
+runs:
+  using: composite
+  steps:
+    - name: paths
+      shell: bash
+      env:
+        WORK: ${{ inputs.work }}
+      run: |
+        set -euo pipefail
+        env_dir="$RUNNER_TEMP/macaron-env"
+        home="$RUNNER_TEMP/podman-desktop-home"
+        mkdir -p "$env_dir" "$home/configuration"
+        {
+          echo "MACARON_ENV=$env_dir"
+          echo "MACARON_WORK=$WORK"
+          echo "PODMAN_DESKTOP_HOME_DIR=$home"
+          echo "DISPLAY=:99"
+        } >> "$GITHUB_ENV"
+
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: 24
+
+    - name: dependencies
+      shell: bash
+      working-directory: ${{ inputs.work }}
+      run: corepack enable && pnpm install --frozen-lockfile
+
+    - name: build Podman Desktop from the checkout
+      shell: bash
+      working-directory: ${{ inputs.work }}
+      run: pnpm build >"$MACARON_ENV/build.log" 2>&1 || { tail -60 "$MACARON_ENV/build.log"; exit 1; }
+
+    - name: Podman machine prerequisites
+      shell: bash
+      env:
+        PARAMS: ${{ inputs.params }}
+      run: |
+        set -euo pipefail
+        if [[ "$(jq -r '.machine // false' <<<"$PARAMS")" != "true" ]]; then echo "no machine requested"; exit 0; fi
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq qemu-system-x86 qemu-utils gvproxy virtiofsd >/dev/null
+        # KVM for the runner user, as GitHub documents for Android emulators.
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+        sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+        # Ubuntu installs gvproxy in /usr/bin, outside Podman's default helper directories.
+        mkdir -p "$HOME/.config/containers"
+        printf '%s\n' '[engine]' 'helper_binaries_dir = ["/usr/libexec/podman", "/usr/lib/podman", "/usr/bin", "/usr/libexec"]' \
+          '[machine]' 'provider = "qemu"' >"$HOME/.config/containers/containers.conf"
+        podman machine init --cpus 2 --memory 2048 --disk-size 20 >"$MACARON_ENV/machine-init.log" 2>&1 \
+          || { tail -40 "$MACARON_ENV/machine-init.log"; exit 1; }
+        podman machine list
+
+    - name: tools for the agent
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        # podman-desktop/podman-desktop at the commit whose mcp-testing skill this environment follows
+        # (pinned: not taken from the checkout under test).
+        SKILL_REPO: https://github.com/podman-desktop/podman-desktop.git
+        SKILL_SHA: 1395eb8743821e566b5d5f741f523c67f7e407bc
+      run: |
+        set -euo pipefail
+        mkdir -p "$MACARON_ENV/tools"
+        cp "$ACTION_PATH/tools/package.json" "$ACTION_PATH/tools/package-lock.json" "$ACTION_PATH/tools/screenshot.mjs" "$MACARON_ENV/tools/"
+        npm ci --prefix "$MACARON_ENV/tools" --no-fund --no-audit --omit=dev
+        skill_checkout="$RUNNER_TEMP/podman-desktop-skill"
+        git init --quiet "$skill_checkout"
+        git -C "$skill_checkout" remote add origin "$SKILL_REPO"
+        git -C "$skill_checkout" sparse-checkout set --no-cone /.agents/skills/mcp-testing/
+        git -C "$skill_checkout" fetch --quiet --depth=1 --filter=blob:none origin "$SKILL_SHA"
+        git -C "$skill_checkout" checkout --quiet FETCH_HEAD
+        rm -rf "$MACARON_ENV/skill" && cp -R "$skill_checkout/.agents/skills/mcp-testing" "$MACARON_ENV/skill"
+        jq -n --arg server "$MACARON_ENV/tools/node_modules/electron-test-mcp/dist/index.js" \
+          '{ mcpServers: { "podman-desktop-mcp": { type: "stdio", command: "node", args: [$server] } } }' > "$MACARON_ENV/mcp.json"
+        cp "$ACTION_PATH/AGENTS.md" "$MACARON_ENV/AGENTS.md"
+        cp "$ACTION_PATH/podman-desktop.sh" "$MACARON_ENV/podman-desktop.sh"
+
+    - name: Podman Desktop on a virtual display (CDP on 9222)
+      shell: bash
+      run: |
+        set -euo pipefail
+        # As the Playwright runner of @podman-desktop/tests-playwright, plus no telemetry.
+        cat > "$PODMAN_DESKTOP_HOME_DIR/configuration/settings.json" <<'JSON'
+        {
+          "preferences.OpenDevTools": "none",
+          "extensions.autoUpdate": false,
+          "extensions.autoCheckUpdates": false,
+          "telemetry.enabled": false,
+          "telemetry.check": true
+        }
+        JSON
+        Xvfb :99 -screen 0 1600x1000x24 >"$MACARON_ENV/xvfb.log" 2>&1 &
+        bash "$MACARON_ENV/podman-desktop.sh" --no-build
