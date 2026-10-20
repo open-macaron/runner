@@ -11,7 +11,7 @@ inputs:
     required: true
   params:
     description: >
-      JSON object. Optional "machine": true to install what Podman machines need on Linux (QEMU,
+      JSON object (string values). Optional "machine": "true" to install what Podman machines need on Linux (QEMU,
       gvproxy, virtiofsd, KVM access) and create a stopped machine named "podman-machine-default".
     required: false
     default: "{}"
