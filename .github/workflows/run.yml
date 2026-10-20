@@ -34,8 +34,8 @@ jobs:
       contents: read # checkout of this (public) repository's environments
     env:
       # Pinned bundle of open-macaron/macaron's agent-cli; the PR bumping it verified its attestation.
-      AGENT_CLI_URL: https://github.com/open-macaron/macaron/releases/download/agent-cli-7ba4b583d1354f3d0ccd3044f8d971ee6775a5c4/macaron-agent.mjs
-      AGENT_CLI_SHA256: "7f31ea3638e7aa55c20904cb74aef415dd5df8d2b69e4250436779054a0808f5"
+      AGENT_CLI_URL: https://github.com/open-macaron/macaron/releases/download/agent-cli-b9bc3e2e6b190587fd9160342f0a9dd4b83ae2e0/macaron-agent.mjs
+      AGENT_CLI_SHA256: "21d32a74948d21fc6342eca210932de43c644450c9b28a0a496f94cbf9ed9f1e"
       MACARON_CONTROLLER_URL: ${{ inputs.controller-url }}
       MACARON_TICKET: ${{ inputs.ticket }}
       MACARON_REPO: ${{ inputs.repo }}
