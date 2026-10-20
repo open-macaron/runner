@@ -3,8 +3,9 @@ description: >
   Podman Desktop itself: the checkout's dependencies installed and the application built from it,
   then started with Electron on a virtual display with the Chrome DevTools Protocol on port 9222.
   The agent drives it through the MCP server of Podman Desktop's mcp-testing skill, and can rebuild
-  and restart it after changing the code. Optionally a Podman machine (QEMU/KVM), for issues about
-  machines on Linux. Needs ubuntu-26.04 (Podman 5.7, Xvfb). Runs before the agent gets any key.
+  and restart it after changing the code. Linux: ubuntu-26.04 (Podman 5.7, Xvfb), optionally a Podman
+  machine (QEMU/KVM). Windows: windows-2025, the runner's desktop, Podman with a running WSL machine.
+  Runs before the agent gets any key.
 inputs:
   work:
     description: Path of the upstream checkout.
@@ -13,6 +14,7 @@ inputs:
     description: >
       JSON object (string values). Optional "machine": "true" to install what Podman machines need on Linux (QEMU,
       gvproxy, virtiofsd, KVM access) and create a stopped machine named "podman-machine-default".
+      On Windows the machine always exists, and runs.
     required: false
     default: "{}"
 runs:
@@ -31,7 +33,6 @@ runs:
           echo "MACARON_ENV=$env_dir"
           echo "MACARON_WORK=$WORK"
           echo "PODMAN_DESKTOP_HOME_DIR=$home"
-          echo "DISPLAY=:99"
         } >> "$GITHUB_ENV"
 
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -49,6 +50,7 @@ runs:
       run: pnpm build >"$MACARON_ENV/build.log" 2>&1 || { tail -60 "$MACARON_ENV/build.log"; exit 1; }
 
     - name: Podman machine prerequisites
+      if: runner.os == 'Linux'
       shell: bash
       env:
         PARAMS: ${{ inputs.params }}
@@ -68,6 +70,19 @@ runs:
           || { tail -40 "$MACARON_ENV/machine-init.log"; exit 1; }
         podman machine list
 
+    - name: Podman and its machine
+      if: runner.os == 'Windows'
+      uses: redhat-actions/podman-install@aea6ff44f2a4a82da13d22061ce73443a125925d
+      with:
+        github-token: ${{ github.token }}
+    - name: Podman on the PATH
+      if: runner.os == 'Windows'
+      shell: bash
+      # The installer's user-scope location: podman-install only adds it to its own step's PATH.
+      run: |
+        echo "$LOCALAPPDATA\Programs\Podman" >> "$GITHUB_PATH"
+        "$LOCALAPPDATA/Programs/Podman/podman" machine list
+
     - name: tools for the agent
       shell: bash
       env:
@@ -84,7 +99,7 @@ runs:
         skill_checkout="$RUNNER_TEMP/podman-desktop-skill"
         git init --quiet "$skill_checkout"
         git -C "$skill_checkout" remote add origin "$SKILL_REPO"
-        git -C "$skill_checkout" sparse-checkout set --no-cone /.agents/skills/mcp-testing/
+        git -C "$skill_checkout" sparse-checkout set --no-cone .agents/skills/mcp-testing/
         git -C "$skill_checkout" fetch --quiet --depth=1 --filter=blob:none origin "$SKILL_SHA"
         git -C "$skill_checkout" checkout --quiet FETCH_HEAD
         rm -rf "$MACARON_ENV/skill" && cp -R "$skill_checkout/.agents/skills/mcp-testing" "$MACARON_ENV/skill"
@@ -93,7 +108,14 @@ runs:
         cp "$ACTION_PATH/AGENTS.md" "$MACARON_ENV/AGENTS.md"
         cp "$ACTION_PATH/podman-desktop.sh" "$MACARON_ENV/podman-desktop.sh"
 
-    - name: Podman Desktop on a virtual display (CDP on 9222)
+    - name: virtual display
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        Xvfb :99 -screen 0 1600x1000x24 >"$MACARON_ENV/xvfb.log" 2>&1 &
+        echo "DISPLAY=:99" >> "$GITHUB_ENV"
+
+    - name: Podman Desktop (CDP on 9222)
       shell: bash
       run: |
         set -euo pipefail
@@ -107,5 +129,4 @@ runs:
           "telemetry.check": true
         }
         JSON
-        Xvfb :99 -screen 0 1600x1000x24 >"$MACARON_ENV/xvfb.log" 2>&1 &
         bash "$MACARON_ENV/podman-desktop.sh" --no-build

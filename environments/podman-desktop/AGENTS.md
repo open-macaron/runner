@@ -1,6 +1,6 @@
 ## Environment: Podman Desktop, built from this checkout, is running
 
-Podman Desktop was built from this repository's checkout (`pnpm build`) and is running with Electron on a virtual display. Its window is reachable over the Chrome DevTools Protocol on port **9222**. Podman (5.7) is installed on the machine.
+Podman Desktop was built from this repository's checkout (`pnpm build`) and is running with Electron (on a virtual display on Linux, on the runner's desktop on Windows). Its window is reachable over the Chrome DevTools Protocol on port **9222**. Podman is installed on the machine.
 
 **Driving it: the `podman-desktop-mcp` MCP server** (Podman Desktop's own `mcp-testing` skill).
 - Follow `$MACARON_ENV/skill/agent-prompt.md`: connect with `connect({ port: 9222 })`, check the title, handle the welcome dialog (click **Skip**), then work through selectors.
@@ -9,16 +9,18 @@ Podman Desktop was built from this repository's checkout (`pnpm build`) and is r
 
 **After changing the code:** rebuild and restart it with `bash "$MACARON_ENV/podman-desktop.sh"` (a few minutes), then reconnect the MCP server. Check your change in the running application before you report it.
 
-**Podman machines** (when this run asked for one): QEMU with KVM is installed and a stopped machine named `podman-machine-default` exists (`podman machine list`). `podman machine start` takes a minute or two; `podman machine set` needs the machine stopped.
+**Podman machines:**
+- Linux (when this run asked for one): QEMU with KVM is installed and a stopped machine named `podman-machine-default` exists (`podman machine list`). `podman machine start` takes a minute or two; `podman machine set` needs the machine stopped.
+- Windows: Podman was installed with its Windows installer (user scope, in `$LOCALAPPDATA/Programs/Podman`) and a WSL machine named `podman-machine-default` is running. Hyper-V machines can't run on this runner. Podman reads its machine provider from `containers.conf` (`[machine] provider = "wsl"` or `"hyperv"`), e.g. `$APPDATA/containers/containers.conf`.
 
 **Evidence: screenshots of what you show.**
 1. Save a screenshot of the window, or of one element:
    ```sh
-   node "$MACARON_ENV/tools/screenshot.mjs" --out /tmp/settings.png --selector 'CSS selector'
+   node "$MACARON_ENV/tools/screenshot.mjs" --out "$RUNNER_TEMP/settings.png" --selector 'CSS selector'
    ```
 2. Attach it, and use the printed reference in your message or pull request body:
    ```sh
-   macaron-agent attach /tmp/settings.png --kind image --caption "What the screenshot shows"
+   macaron-agent attach "$RUNNER_TEMP/settings.png" --kind image --caption "What the screenshot shows"
    ```
    Keep the files out of the repository checkout.
 
