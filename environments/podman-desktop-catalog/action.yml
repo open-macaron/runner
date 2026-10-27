@@ -1,0 +1,89 @@
+name: podman-desktop-catalog environment
+description: >
+  podman-desktop/podman-desktop-catalog: the repository's dependencies, the latest Podman Desktop
+  build, and the tools to drive it (the MCP server of Podman Desktop's mcp-testing skill) on a
+  virtual display. Podman Desktop isn't started: when a change touches static/, the agent runs
+  catalog.sh, which serves the checkout's static/ and starts Podman Desktop with that catalog as its
+  registry, the Chrome DevTools Protocol on port 9222. Linux only: ubuntu-26.04 (Xvfb). Runs before
+  the agent gets any key.
+inputs:
+  work:
+    description: Path of the upstream checkout.
+    required: true
+  params:
+    description: JSON object of environment parameters from the controller (unused here).
+    required: false
+    default: "{}"
+runs:
+  using: composite
+  steps:
+    - name: paths
+      shell: bash
+      env:
+        WORK: ${{ inputs.work }}
+      run: |
+        set -euo pipefail
+        env_dir="$RUNNER_TEMP/macaron-env"
+        home="$RUNNER_TEMP/podman-desktop-home"
+        mkdir -p "$env_dir" "$home/plugins" "$home/configuration"
+        {
+          echo "MACARON_ENV=$env_dir"
+          echo "MACARON_WORK=$WORK"
+          echo "PODMAN_DESKTOP_HOME_DIR=$home"
+        } >> "$GITHUB_ENV"
+
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: 24
+
+    - name: dependencies
+      shell: bash
+      working-directory: ${{ inputs.work }}
+      run: corepack enable && pnpm install --frozen-lockfile
+
+    # No version: the latest prerelease. Catalog entries often target the upcoming release
+    # (podman-desktop/podman-desktop-catalog#1460 needed 1.31 while 1.30 was the latest stable).
+    - name: Podman Desktop
+      id: podman-desktop
+      uses: podman-desktop/gh-extensions-actions/.github/actions/podman-desktop-install@e59cd52b942e8dfcc187293c5d8e9f3831c7ac0c # v0.11.0
+      with:
+        github-token: ${{ github.token }}
+
+    - name: tools for the agent
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        PODMAN_DESKTOP_BINARY: ${{ steps.podman-desktop.outputs.binary }}
+        PODMAN_DESKTOP_VERSION: ${{ steps.podman-desktop.outputs.version }}
+        # podman-desktop/podman-desktop at the commit whose mcp-testing skill this environment follows.
+        SKILL_REPO: https://github.com/podman-desktop/podman-desktop.git
+        SKILL_SHA: 1395eb8743821e566b5d5f741f523c67f7e407bc
+      run: |
+        set -euo pipefail
+        {
+          echo "PODMAN_DESKTOP_BINARY=$PODMAN_DESKTOP_BINARY"
+          echo "PODMAN_DESKTOP_VERSION=$PODMAN_DESKTOP_VERSION"
+        } >> "$GITHUB_ENV"
+        # The MCP server and Playwright, from the lockfile next to this action.
+        mkdir -p "$MACARON_ENV/tools"
+        cp "$ACTION_PATH/tools/package.json" "$ACTION_PATH/tools/package-lock.json" "$ACTION_PATH/tools/screenshot.mjs" "$MACARON_ENV/tools/"
+        npm ci --prefix "$MACARON_ENV/tools" --no-fund --no-audit --omit=dev
+        # Podman Desktop's mcp-testing skill: the agent prompt and the selectors of each screen.
+        skill_checkout="$RUNNER_TEMP/podman-desktop-skill"
+        git init --quiet "$skill_checkout"
+        git -C "$skill_checkout" remote add origin "$SKILL_REPO"
+        git -C "$skill_checkout" sparse-checkout set --no-cone .agents/skills/mcp-testing/
+        git -C "$skill_checkout" fetch --quiet --depth=1 --filter=blob:none origin "$SKILL_SHA"
+        git -C "$skill_checkout" checkout --quiet FETCH_HEAD
+        rm -rf "$MACARON_ENV/skill" && cp -R "$skill_checkout/.agents/skills/mcp-testing" "$MACARON_ENV/skill"
+        # What macaron-agent passes to the harness: the MCP server, and these instructions.
+        jq -n --arg server "$MACARON_ENV/tools/node_modules/electron-test-mcp/dist/index.js" \
+          '{ mcpServers: { "podman-desktop-mcp": { type: "stdio", command: "node", args: [$server] } } }' > "$MACARON_ENV/mcp.json"
+        cp "$ACTION_PATH/AGENTS.md" "$MACARON_ENV/AGENTS.md"
+        cp "$ACTION_PATH/catalog.sh" "$MACARON_ENV/catalog.sh"
+
+    - name: virtual display
+      shell: bash
+      run: |
+        Xvfb :99 -screen 0 1600x1000x24 >"$MACARON_ENV/xvfb.log" 2>&1 &
+        echo "DISPLAY=:99" >> "$GITHUB_ENV"
